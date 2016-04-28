@@ -1,0 +1,233 @@
+---
+title: "Across Sample Aggregation of Spike Percentages"
+author: "Wes Horton, Burcu Gurun-Demir"
+date: "April 25, 2016"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(magrittr)
+library(reshape2)
+```
+
+## Distribution of Spike Percents in a batch  
+
+In a given batch, we have approximately 170 samples (give or take a few). Each sample has a spike percentage that is calculated as the number of spiked reads divided by the total number of reads. All three of these values are calculated in the count.spikes QC script for the 9-bp spike.  
+
+### Set up  
+
+Before we begin, we must first read in our data. We want to grab the aggregate 9-bp spike count qc file as well as the metadata file for this particular batch. The qc file contains one row for each sample, with a variety of columns. Those of interest columns 2, 3 and 4. They correspond to total reads in the file, number of spiked reads, and spiked reads as a percent of total reads, respectively. The metadata file will be used later for when we subset by sample type. It contains one row for each sample, and specifies sample type and treatment.  
+
+```{r}
+# Read in qc file
+qc.file <- "~/Desktop/OHSU/tcr_spike/data/DNA151124LC/QC/9bp.count.spikes.QC.summary.txt"
+qc.data <- read.table(qc.file, header = T, sep = ',', stringsAsFactors = F)
+# Clean up table
+# Remove file path from sample ID
+new.ids <- strsplit(qc.data$sample.id, split = "/")
+new.ids <- sapply(new.ids, function(x) x[12])
+qc.data$sample.id <- new.ids
+# Sort by sample number
+qc.data$num <- as.numeric(gsub(".*_S|\\..*", '',qc.data$sample.id))
+qc.data <- arrange(qc.data, num)
+# Remove Sample 142 because it has erroneous data
+qc.data <- qc.data[-142,]
+
+# Read in metadata file
+metadata.file <- "~/Desktop/OHSU/tcr_spike/data/vj_metadata/151124_qc_metadata.txt"
+metadata <- read.table(metadata.file)
+```
+
+#### Overall Summary  
+
+First, we'll produce a boxplot of all of the samples in the batch, so that we can get an idea of the distribution and identify any outliers we may have.
+
+
+```{r, echo = FALSE}
+# Un-transformed data
+boxplot(qc.data$pct.spiked.reads, main = "Percent Spikes in DNA151124LC", xlab = "Sample",
+        ylab = "Spiked reads as percent of Total")
+```
+
+We can see that there are quite a few small percents, and a few very large ones. In order to get a clearer picture of these small values, we will now present the same figure with spike percents transfromed into log(percent).
+
+```{r, echo = FALSE}
+# Log-transform data
+qc.log.data <- data.frame(qc.data$sample.id, log(qc.data$pct.spiked.reads))
+colnames(qc.log.data) <- c("sample.id", "log.pct.spiked.reads")
+
+# Boxplot
+boxplot(qc.log.data$log.pct.spiked.reads, main = "Percent Spikes in DNA151124LC",
+        xlab="Sample", ylab = "Log-Transformed Percent Spiked Reads")
+```
+
+#### Summary by Sample Type  
+
+The above plots may not be very illuminating due to the inclusion of different sample types within this batch. 
+
+```{r}
+summary(metadata)
+```
+
+We can see that a majority of the samples are ffpe tumor, but we have a few blood samples as well as some control. TO DO: what are these controls?  
+Let's subset by sample type and create one boxplot for each.  
+
+```{r, echo = FALSE}
+# Add metadata columns to qc file
+qc.log.data$tissue <- metadata$V3
+
+# extract blood
+qc.log.blood <- qc.log.data[qc.log.data$tissue == "blood",]
+
+# Extract ffpe
+qc.log.ffpe <- qc.log.data[qc.log.data$tissue == "ffpe",]
+
+# Extract controls
+qc.log.control <- qc.log.data[qc.log.data$tissue == "control",]
+
+par(mfrow=c(1,2), mar=c(4.1,4.1,3.1,2.1))
+boxplot(qc.log.blood$log.pct.spiked.reads, main = "Percent Spikes Blood\n DNA151124LC",
+        xlab = "Sample", ylab = "Log-Transformed Percent")
+boxplot(qc.log.ffpe$log.pct.spiked.reads, main = "Percent Spikes FFPE\n DNA151124LC",
+        xlab = "Sample", ylab = "Log-Transformed Percent")
+par(mfrow=c(1,1))
+boxplot(qc.log.control$log.pct.spiked.reads, main = "Percent Spikes Control\n DNA151123LC",
+        xlab = "Sample", ylab = "Log-Transformed Percent")
+```
+
+### Summary of Forward and Reverse Primers
+
+We have 260 synthetic templates that each correspond to a unique forward and reverse primer pair. These 260 primer pairs are comprised of 20 forward (bind to V region of CDR3) and 13 reverse (bind to J region of CDR3). It will be informative to look at the total spike reads (as a percent of total reads) for each of the V primers and for each of the J primers.  
+
+First let's look at the V primers. We need to group the spike counts by each V primer, i.e. sum the counts for V1J1, V1J2, V1J3, etc. for all twenty V primers. To do this, we need to use the 25-bp qc file instead of the 9-bp file. We also need to read in the original spike file so that we can convert the DM_# labels into V/J labels
+
+```{r, echo = FALSE}
+# Read in qc file
+qc.file.25 <- "~/Desktop/OHSU/tcr_spike/data/DNA151124LC/QC/25bp.count.spikes.QC.summary.txt"
+qc.data.25 <- read.table(qc.file.25, header = T, sep = ',', stringsAsFactors = F)
+# Clean up table
+# Remove file path from sample ID
+new.ids <- strsplit(qc.data.25$sample.id, split = "/")
+new.ids <- sapply(new.ids, function(x) x[12])
+qc.data.25$sample.id <- new.ids
+# Sort by sample number
+qc.data.25$num <- as.numeric(gsub(".*_S|\\..*", '',qc.data.25$sample.id))
+qc.data.25 <- arrange(qc.data.25, num)
+# Remove Sample 142 because it has erroneous data
+qc.data.25 <- qc.data.25[-142,]
+
+### Subset the Data by Tissue Type
+# Add metadata columns to qc file
+qc.data.25$tissue <- metadata$V3
+
+# extract blood
+qc.blood.25 <- qc.data.25[qc.data.25$tissue == "blood",]
+
+# Extract ffpe
+qc.ffpe.25 <- qc.data.25[qc.data.25$tissue == "ffpe",]
+
+# Extract controls
+qc.control.25 <- qc.data.25[qc.data.25$tissue == "control",]
+
+# Read in spike file
+spikes <- read.table("~/Desktop/OHSU/tcr_spike/text_barcodesvj.txt", sep = ' ', header = T)
+
+### Transform qc data frame
+# Remove unwanted columns
+qc.data.25.xform <- qc.data.25[,5:264]
+qc.blood.25.xform <- qc.blood.25[,5:264]
+qc.ffpe.25.xform <- qc.ffpe.25[,5:264]
+qc.control.25.xform <- qc.control.25[,5:264]
+
+qc.data.25.xform <- data.frame(t((qc.data.25.xform)))
+qc.blood.25.xform <- data.frame(t(qc.blood.25.xform))
+qc.ffpe.25.xform <- data.frame(t(qc.ffpe.25.xform))
+qc.control.25.xform <- data.frame(t(qc.control.25.xform))
+colnames(qc.data.25.xform) <- qc.data.25$sample.id
+
+
+
+
+# Add V and J Labels from spike file
+qc.data.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.data.25.xform)
+qc.blood.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.blood.25.xform)
+qc.ffpe.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.ffpe.25.xform)
+qc.control.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.control.25.xform)
+
+# Group by V and again by J
+# Total
+qc.data.25.V <- qc.data.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.data.25.J <- qc.data.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Blood
+qc.blood.25.V <- qc.blood.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.blood.25.J <- qc.blood.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Tumor
+qc.ffpe.25.V <- qc.ffpe.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.ffpe.25.J <- qc.ffpe.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Control
+qc.control.25.V <- qc.control.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.control.25.J <- qc.control.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+
+# Melt data frames for boxplotting
+qc.data.25.V.melt <- melt(qc.data.25.V, id.vars = "V", na.rm = F)
+qc.data.25.J.melt <- melt(qc.data.25.J, id.vars = "J", na.rm = F)
+qc.blood.25.V.melt <- melt(qc.blood.25.V, id.vars = "V", na.rm = F)
+qc.blood.25.J.melt <- melt(qc.blood.25.J, id.vars = "J", na.rm = F)
+qc.ffpe.25.V.melt <- melt(qc.ffpe.25.V, id.vars = "V", na.rm = F)
+qc.ffpe.25.J.melt <- melt(qc.ffpe.25.J, id.vars = "J", na.rm = F)
+qc.control.25.V.melt <- melt(qc.control.25.V, id.vars = "V", na.rm = F)
+qc.control.25.J.melt <- melt(qc.control.25.J, id.vars = "J", na.rm = F)
+
+# Create BoxPlots
+#boxplot(qc.data.25.V.melt$value ~ qc.data.25.V.melt$V, las = 2, cex.axis = .9,
+#        main = "DNA151124 Spike Percents by Forward Primer", xlab = "Primer",
+#        ylab = "Percent")
+#boxplot(qc.data.25.J.melt$value ~ qc.data.25.J.melt$J, las = 2, cex.axis = .9,
+#        main = "DNA151124 Spike Percents by Reverse Primer", xlab = "Primer",
+#        ylab = "Percent")
+
+# Again, but log transformed
+boxplot(log(qc.data.25.V.melt$value + 1) ~ qc.data.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.data.25.J.melt$value + 1) ~ qc.data.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.blood.25.V.melt$value + 1) ~ qc.blood.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Blood Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.blood.25.J.melt$value + 1) ~ qc.blood.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Blood Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.ffpe.25.V.melt$value + 1) ~ qc.ffpe.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 FFPE Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.ffpe.25.J.melt$value + 1) ~ qc.ffpe.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 FFPE Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.control.25.V.melt$value + 1) ~ qc.control.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Control Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.control.25.J.melt$value + 1) ~ qc.control.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Control Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+```
+
