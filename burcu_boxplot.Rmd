@@ -1,0 +1,271 @@
+---
+title: "Across Sample Aggregation of Spike Percentages"
+author: "Wes Horton, Burcu Gurun-Demir"
+date: "April 25, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+
+```
+
+## Description of data. 
+
+In a given batch, we have approximately 170 samples (give or take a few). Each sample is comprised of T-cell DNA as well as 260 unique synthetic (spike-in) DNA sequences. Sequences are amplified in a multiplex PCR reaction using 20 forward and 13 reverse primers. Forward primers bind to the V region of T-cell CDR3 sequences, and reverse primers bind to the J region of the same sequence. The 260 combinations of forward and reverse primers act to amplify all possible CDR3 rearrangements that occur within a given sample, as well as all of the spikes.  
+Each sample has a spike percentage that is calculated as the total number of spiked reads divided by the total number of reads. All three of these values are calculated in the count.spikes QC script for the 9-bp spike. The 25-bp count spike QC file contains the same information, but instead of summarizing total spikes, the values are divided for each of the 260 unique spikes, listing their counts and their percentage relative to total reads.  
+
+### Set up  
+
+Before we begin, we must first read in our data. We want to grab the aggregate 9-bp spike count qc file, the aggregate 25-bp spike count qc file, as well as the metadata file for this particular batch. The qc files contain one row for each sample, with a variety of columns. Those of interest columns 2, 3 and 4. They correspond to total reads in the file, number of spiked reads, and spiked reads as a percent of total reads, respectively. The metadata file will be used later for when we subset by sample type. It contains one row for each sample, and specifies sample type and treatment.  
+We're working with data with many small and large values, so we need to transform our counts so that we can observe them all at the same time. Instead of representing percent, we will be displaying log(percent\*), where percent\* = 100(count+1)/total.
+
+
+
+```{r}
+# Read in qc files
+qc.file <- "./box_download/9bp.count.spikes.QC.summary.txt"
+qc.data <- read.table(qc.file, header = T, sep = ',', stringsAsFactors = F)
+qc.file.25 <- "./box_download/25bp.count.spikes.QC.summary.txt"
+qc.data.25 <- read.table(qc.file.25, header = T, sep = ',', stringsAsFactors = F)
+
+### Clean up tables
+# Remove file path from sample ID
+ids.9 <- strsplit(qc.data$sample.id, split = "/")
+ids.9 <- sapply(ids.9, function(x) x[12])
+qc.data$sample.id <- ids.9
+
+ids.25 <- strsplit(qc.data.25$sample.id, split = "/")
+ids.25 <- sapply(ids.25, function(x) x[12])
+qc.data$sample.id <- ids.25
+
+# Sort by sample number
+qc.data$num <- as.numeric(gsub(".*_S|\\..*", '',qc.data$sample.id))
+qc.data <- arrange(qc.data, num)
+
+qc.data.25$num <- as.numeric(gsub(".*_S|\\..*", '',qc.data.25$sample.id))
+qc.data.25 <- arrange(qc.data.25, num)
+
+# Remove Sample 142 because it has erroneous data
+qc.data <- qc.data[-142,]
+qc.data.25 <- qc.data.25[-142,]
+
+# Read in metadata file
+metadata.file <- "./box_download/151124_qc_metadata.txt"
+metadata <- read.table(metadata.file)
+
+# Log-transform 9-bp data
+qc.log.data <- data.frame(qc.data$sample.id, log(qc.data$pct.spiked.reads))
+colnames(qc.log.data) <- c("sample.id", "log.pct.spiked.reads")
+
+```
+
+#### Summary by Sample Type  
+
+```{r}
+summary(metadata)
+```
+
+We can see that a majority of the samples are ffpe tumor, but we have a few blood samples as well as some control. TO DO: what are these controls?  
+
+### Summary of Forward and Reverse Primers
+
+As mentioned above, we have 260 different primer combinations. It will be informative to look at the total spike reads (as a percent of total reads) for each of the V primers and for each of the J primers.  
+
+We need to group the spike counts by each V primer, i.e. sum the counts for V1J1, V1J2, V1J3, etc. for all twenty V primers, and again for all thirteen J primers. To do this, we need to use the 25-bp qc file instead of the 9-bp file. We also need to read in the original spike file so that we can convert the DM_# labels into V/J labels
+
+```{r, echo = FALSE}
+### Subset the Data by Tissue Type
+# Add metadata columns to qc file
+qc.data.25$tissue <- metadata$V3
+
+# extract blood
+qc.blood.25 <- qc.data.25[qc.data.25$tissue == "blood",]
+
+# Extract ffpe
+qc.ffpe.25 <- qc.data.25[qc.data.25$tissue == "ffpe",]
+
+# Extract controls
+qc.control.25 <- qc.data.25[qc.data.25$tissue == "control",]
+
+# Read in spike file
+spikes <- read.table("./box_download/text_barcodesvj.txt", sep = ' ', header = T)
+
+### Transform qc data frame
+# Remove unwanted columns
+# These data frames have one row for each sample and one column for each V/J combo
+qc.data.25.xform <- qc.data.25[,5:264]
+qc.blood.25.xform <- qc.blood.25[,5:264]
+qc.ffpe.25.xform <- qc.ffpe.25[,5:264]
+qc.control.25.xform <- qc.control.25[,5:264]
+
+# Perform transformation
+# Data frames now have one row for each V/J combo (260), and 1 column for each sample.
+# Number of columns for subsetted df's needs to sum to total (~170)
+qc.data.25.xform <- data.frame(t((qc.data.25.xform)))
+qc.blood.25.xform <- data.frame(t(qc.blood.25.xform))
+qc.ffpe.25.xform <- data.frame(t(qc.ffpe.25.xform))
+qc.control.25.xform <- data.frame(t(qc.control.25.xform))
+colnames(qc.data.25.xform) <- qc.data.25$sample.id
+
+
+# Add V and J Labels from spike file
+# We need to add these so that we can group by them
+qc.data.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.data.25.xform)
+qc.blood.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.blood.25.xform)
+qc.ffpe.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.ffpe.25.xform)
+qc.control.25.xform <- data.frame(V = spikes$V, J = spikes$J, qc.control.25.xform)
+
+# Group by V and again by J
+# Data frames will now have 20 rows (if grouped by V) or 13 rows (if grouped by J)
+# Number of columns will vary by sample type
+# Total
+qc.data.25.V <- qc.data.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.data.25.J <- qc.data.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Blood
+qc.blood.25.V <- qc.blood.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.blood.25.J <- qc.blood.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Tumor
+qc.ffpe.25.V <- qc.ffpe.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.ffpe.25.J <- qc.ffpe.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+# Control
+qc.control.25.V <- qc.control.25.xform[,-2] %>%
+  group_by(V) %>%
+  summarize_each(funs("sum"))
+qc.control.25.J <- qc.control.25.xform[,-1] %>%
+  group_by(J) %>%
+  summarize_each(funs("sum"))
+
+# Melt data frames for boxplotting
+# We want to put our data in the long format so that we can use the boxplot tools.
+qc.data.25.V.melt <- melt(qc.data.25.V, id.vars = "V", na.rm = F)
+qc.data.25.J.melt <- melt(qc.data.25.J, id.vars = "J", na.rm = F)
+qc.blood.25.V.melt <- melt(qc.blood.25.V, id.vars = "V", na.rm = F)
+qc.blood.25.J.melt <- melt(qc.blood.25.J, id.vars = "J", na.rm = F)
+qc.ffpe.25.V.melt <- melt(qc.ffpe.25.V, id.vars = "V", na.rm = F)
+qc.ffpe.25.J.melt <- melt(qc.ffpe.25.J, id.vars = "J", na.rm = F)
+qc.control.25.V.melt <- melt(qc.control.25.V, id.vars = "V", na.rm = F)
+qc.control.25.J.melt <- melt(qc.control.25.J, id.vars = "J", na.rm = F)
+
+```
+
+##Terry's Question 1
+
+First, we'll produce a boxplot of all of the samples in the batch, so that we can get an idea of the distribution and identify any outliers we may have.
+
+
+```{r, echo = FALSE}
+# Un-transformed data
+boxplot(qc.data$pct.spiked.reads, main = "Percent Spikes in DNA151124LC", xlab = "Sample",
+        ylab = "Spiked reads as percent of Total")
+```
+
+We can see that there are quite a few small percents, and a few very large ones. In order to get a clearer picture of these small values, we should use the log transformed data.
+
+```{r, echo = FALSE}
+
+# Boxplot
+boxplot(qc.log.data$log.pct.spiked.reads, main = "Percent Spikes in DNA151124LC",
+        xlab="Sample", ylab = "Log-Transformed Percent Spiked Reads")
+```
+
+Above, we noted the different sample types, so let's subset by sample type and create one boxplot for each.  
+
+```{r, echo = FALSE}
+# Add metadata columns to qc file
+qc.log.data$tissue <- metadata$V3
+
+#alternative ggplot
+sbst<-ggplot(qc.log.data, aes(x=tissue, y=log.pct.spiked.reads, group=tissue)) + geom_boxplot()
+sbst
+```
+
+
+##Terry's Question 2
+
+We can split the 260 V/J combos by V and J regions and plot them as well.  
+
+```{r}
+# Create BoxPlots
+#boxplot(qc.data.25.V.melt$value ~ qc.data.25.V.melt$V, las = 2, cex.axis = .9,
+#        main = "DNA151124 Spike Percents by Forward Primer", xlab = "Primer",
+#        ylab = "Percent")
+#boxplot(qc.data.25.J.melt$value ~ qc.data.25.J.melt$J, las = 2, cex.axis = .9,
+#        main = "DNA151124 Spike Percents by Reverse Primer", xlab = "Primer",
+#        ylab = "Percent")
+
+# Again, but log transformed
+boxplot(log(qc.data.25.V.melt$value + 1) ~ qc.data.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.data.25.J.melt$value + 1) ~ qc.data.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.blood.25.V.melt$value + 1) ~ qc.blood.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Blood Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.blood.25.J.melt$value + 1) ~ qc.blood.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Blood Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.ffpe.25.V.melt$value + 1) ~ qc.ffpe.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 FFPE Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.ffpe.25.J.melt$value + 1) ~ qc.ffpe.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 FFPE Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.control.25.V.melt$value + 1) ~ qc.control.25.V.melt$V, las = 2, cex.axis = .9,
+        main = "DNA151124 Control Spike Percents by Forward Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+boxplot(log(qc.control.25.J.melt$value + 1) ~ qc.control.25.J.melt$J, las = 2, cex.axis = .9,
+        main = "DNA151124 Control Spike Percents by Reverse Primer", xlab = "Primer",
+        ylab = "Log-Transformed Percent")
+##
+```
+
+
+##Terry's Question 3 VxJ boxplot matrix
+
+Zooming in even further, instead of grouping by V and J segment, we can look at each individual V/J combination for all of our samples.
+
+```{r fig.width=15, fig.height=25, dpi=75}
+theme = theme_set(theme_minimal())
+theme = theme_update(legend.position="top", legend.title=element_blank(), panel.grid.major.x=element_blank())
+
+linearizedSpike<-melt(qc.data.25.xform,id_vars=c("V","J"))
+mbp<-ggplot(linearizedSpike, aes(x=V, y=log(value+1), group=V))+ geom_boxplot(outlier.colour = NULL, aes(fill=log(value+1)))
+mbp+ facet_grid(J~.)+theme #+geom_point(position = position_jitter(0.1)) 
+
+```
+
+
+
+##Terry's Question 4
+
+Instead of looking at the distribution of spike counts across our samples, we can look at the distribution of spike counts within any given sample. 
+
+
+```{r fig.width=15, fig.height=25, dpi=75}
+theme = theme_set(theme_minimal())
+theme = theme_update(legend.position="top", legend.title=element_blank(), panel.grid.major.x=element_blank())
+
+linearizedSpike<-melt(qc.data.25.xform,id_vars=c("V","J"))
+mbp<-ggplot(linearizedSpike, aes(x=variable, y=log(value+1), group=variable))+ geom_boxplot(outlier.colour = NULL, aes(fill=log(value+1)))
+mbp+ facet_wrap( ~ variable)+theme #+geom_point(position = position_jitter(0.1)) 
+
+```
